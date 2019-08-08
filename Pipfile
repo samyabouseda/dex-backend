@@ -10,6 +10,7 @@ gunicorn = "*"
 falcon = "*"
 requests = "*"
 web3 = "*"
+schedule = "*"
 
 [requires]
 python_version = "3.7"
