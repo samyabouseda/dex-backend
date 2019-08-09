@@ -2,6 +2,7 @@ import falcon
 import json
 from web3 import Web3, HTTPProvider
 from web3.auto import w3
+import requests
 from eth_account.messages import encode_defunct
 import random
 
@@ -27,7 +28,7 @@ abi = dex_json["abi"]
 networks = dex_json["networks"]
 address = networks[network_id]["address"]
 
-contract = web3.eth.contract(address=address, abi=abi)
+# contract = web3.eth.contract(address=address, abi=abi)
 
 
 class Order(object):
@@ -92,90 +93,32 @@ class Order(object):
 
 class TransactionQueue(object):
 
-    def __init__(self):
-        self.transaction_queue = Queue(maxsize=0)
-        self.process_transaction()
-
     def put(self, trade):
-        self.transaction_queue.put(trade)
+        # Build trade object.
+        maker_order = trade[0]
+        taker_order = trade[1]
+        token_maker = str(maker_order.token_maker())
+        token_taker = str(maker_order.token_taker())
+        amount_maker = maker_order.amount_maker()
+        amount_taker = maker_order.amount_taker()
+        address_maker = str(maker_order.address_maker())
+        address_taker = str(taker_order.address_maker())
+        nonce = 0
 
-    def process_transaction(self):
-        while self.transaction_queue.qsize() > 0:
-            trade = self.transaction_queue.get()
-            print("MAKER: " + str(trade[0]))
-            print("TAKER: " + str(trade[1]))
+        json = {
+            "addressMaker": address_maker,
+            "addressTaker": address_taker,
+            "amountMaker": str(amount_maker),
+            "amountTaker": str(amount_taker),
+            "nonce": str(nonce),
+            "tokenMaker": token_maker,
+            "tokenTaker": token_taker,
+        }
 
-            # Build trade object.
-            maker_order = trade[0]
-            taker_order = trade[1]
-            token_maker = str(maker_order.token_maker())
-            token_taker = str(maker_order.token_taker())
-            amount_maker = maker_order.amount_maker()
-            amount_taker = maker_order.amount_taker()
-            address_maker = str(maker_order.address_maker())
-            address_taker = str(taker_order.address_maker())
-            # nonce = random.randint(0, 100000)
-            nonce = web3.eth.getTransactionCount('0x8FC9b674Aa37B879F6E9B096C8dB63f92d63A446')
+        url = "http://127.0.0.1:5000/transactions"
+        response = requests.post(url, json=json)
+        print(response.status_code)
 
-            private_key = '0xfb1dfe2ec754c717d2c3226fada7e5cf24450eac999151674837e04f5395cf9b'
-
-
-            # Use the solidityKeccak fucntion to build the message.
-            # web3.solidityKeccak(['uint8', 'uint8', 'uint8'], [97, 98, 99])
-            # ["address", "address", "uint256", "uint256", "address", "address", "uint256"],
-            # [tokenMaker, tokenTaker, amountMaker, amountTaker, addressMaker, addressTaker, nonce]
-            message_hash = web3.solidityKeccak(
-                ["address", "address", "uint256", "uint256", "address", "address", "uint256"],
-                [token_maker, token_taker, amount_maker, amount_taker, address_maker, address_taker, nonce]
-            )
-            print(message_hash.hex())
-
-            message_hash = self.to_32byte_hex(message_hash)
-            print(message_hash)
-
-            signable_message = encode_defunct(text=message_hash)
-            print(signable_message)
-
-            # Sign message.
-            signed_message = web3.eth.account.sign_message(signable_message, private_key=private_key)
-            print(signed_message)
-            signature = signed_message.signature.hex()
-
-            # Build transaction
-            # inputs: order data, signature ==> see bellow.
-
-            trade_tx = contract.functions.trade(
-                token_maker,
-                token_taker,
-                amount_maker,
-                amount_taker,
-                address_maker,
-                address_taker,
-                nonce,
-                signature
-            ).buildTransaction({
-                # 'chainId': 1,
-                'gas': 70000,
-                'gasPrice': w3.toWei('1', 'gwei'),
-                'nonce': nonce,
-            })
-
-            print(trade_tx)
-
-            # Sign transaction.
-            signed_tx = web3.eth.account.sign_transaction(trade_tx, private_key=private_key)
-            print(signed_tx)
-
-            # Send transaction.
-            web3.eth.sendRawTransaction(signed_tx.rawTransaction)
-        print("Waiting for new trades...")
-
-        # call trade() on DEX sc
-        # wait for response
-            # if ok return true
-            # else try again.
-    def to_32byte_hex(self, val):
-        return Web3.toHex(Web3.toBytes(val).rjust(32, b'\0'))
 
 class OrderBook(object):
 
@@ -204,7 +147,7 @@ class OrderBook(object):
                 if order_.matches(order):
                     print('MATCHED')
                     self._transaction_queue.put((order, order_))
-                    self._transaction_queue.process_transaction()
+                    # self._transaction_queue.process_transaction()
                     return True
             return False
 
@@ -215,7 +158,7 @@ class OrderBook(object):
                 if order_.matches(order):
                     print('MATCHED')
                     self._transaction_queue.put((order, order_))
-                    self._transaction_queue.process_transaction()
+                    # self._transaction_queue.process_transaction()
                     return True
             return False
         return False
@@ -227,9 +170,9 @@ class Orders(object):
     def __init__(self):
         self._order_book = OrderBook()
 
-    def on_get(self, req, resp):
-        me_addre = contract.functions.matchingEngine().call()
-        print(contract.address)
+    # def on_get(self, req, resp):
+    #     me_addre = contract.functions.matchingEngine().call()
+    #     print(contract.address)
 
     def on_post(self, req, resp):
         data = json.loads(req.stream.read().decode('utf-8'))
