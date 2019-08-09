@@ -59,6 +59,16 @@ class Order(object):
     def __str__(self):
         return 'Order [ '+self._side+' '+str(self._amount_maker)+' '+self._token_maker+' @ '+str(self._amount_taker)+' '+self._token_taker+']'
 
+    def serialize(self):
+        return {
+            "addressMaker": self._address_maker,
+            "amountMaker": str(self._amount_maker),
+            "amountTaker": str(self._amount_taker),
+            "nonce": str(self._nonce),
+            "tokenMaker": self._token_maker,
+            "tokenTaker": self._token_taker,
+        }
+
     def token_maker(self):
         return self._token_maker
 
@@ -120,6 +130,68 @@ class TransactionQueue(object):
         print(response.status_code)
 
 
+class Bid(object):
+
+    def __init__(self, price, size):
+        self.price = price
+        self.size = size
+        self.total = price * size
+
+    def __eq__(self, other):
+        if isinstance(other, Bid):
+            return self.price == other.price
+        return NotImplemented
+
+    def __ne__(self, other):
+        eq = Bid.__eq__(self, other)
+        return NotImplemented if eq is NotImplemented else not eq
+
+    def serialize(self):
+        return {
+            "bid": self.price,
+            "size": self.size,
+            "total": self.total
+        }
+
+    def update_bid(self, size):
+        self.size = self.size + size
+        self.total = self._calc_total()
+
+    def _calc_total(self):
+        return self.price * self.size
+
+
+class Ask(object):
+
+    def __init__(self, price, size):
+        self.price = price
+        self.size = size
+        self.total = price * size
+
+    def __eq__(self, other):
+        if isinstance(other, Ask):
+            return self.price == other.price
+        return NotImplemented
+
+    def __ne__(self, other):
+        eq = Ask.__eq__(self, other)
+        return NotImplemented if eq is NotImplemented else not eq
+
+    def serialize(self):
+        return {
+            "ask": self.price,
+            "size": self.size,
+            "total": self.total
+        }
+
+    def update_ask(self, size):
+        self.size = self.size + size
+        self.total = self._calc_total()
+
+    def _calc_total(self):
+        return self.price * self.size
+
+
 class OrderBook(object):
 
     def __init__(self):
@@ -137,28 +209,57 @@ class OrderBook(object):
             if not self._matched(order):
                 self._sell_orders.append(order)
 
+    def get_bids(self):
+        # TODO: Add filter "token" to get only the bids/ask for this token.
+        bids = list()
+        for order in self._buy_orders:
+            price = order.amount_maker() / 1000000000000000000 / order.amount_taker()
+            size = order.amount_taker()
+            bid = Bid(price, size)
+            if bid in bids:
+                bid_index = bids.index(bid)
+                existing_bid = bids[bid_index]
+                existing_bid.update_bid(size)
+            else:
+                bids.append(bid)
+        serialized_bids = list()
+        for bid in bids:
+            serialized_bids.append(bid.serialize())
+        return serialized_bids
+
+    def get_asks(self):
+        asks = list()
+        for order in self._sell_orders:
+            price = order.amount_taker() / 1000000000000000000 / order.amount_maker()
+            size =  order.amount_maker()
+            ask = Ask(price, size)
+            if ask in asks:
+                ask_index = asks.index(ask)
+                existing_ask = asks[ask_index]
+                existing_ask.update_ask(size)
+            else:
+                asks.append(ask)
+        serialized_asks = list()
+        for ask in asks:
+            serialized_asks.append(ask.serialize())
+        return serialized_asks
+
     def _matched(self, order_):
         side = order_.side()
 
         if side == 'BUY':
             for order in self._sell_orders:
-                print("order_ " + str(order_))
-                print("order " + str(order))
                 if order_.matches(order):
                     print('MATCHED')
                     self._transaction_queue.put((order, order_))
-                    # self._transaction_queue.process_transaction()
                     return True
             return False
 
         elif side == 'SELL':
             for order in self._buy_orders:
-                print("order_ " + str(order_))
-                print("order " + str(order))
                 if order_.matches(order):
                     print('MATCHED')
                     self._transaction_queue.put((order, order_))
-                    # self._transaction_queue.process_transaction()
                     return True
             return False
         return False
@@ -201,5 +302,22 @@ class Orders(object):
         signer = w3.eth.account.recoverHash(hash, signature=sig)
         return sender == signer
 
+    def on_get(self, req, resp):
+        for key, value in req.params.items():
+            if key == 'side':
+                if value == 'bid':
+                    resp.media = self._order_book.get_bids()
+                    resp.status = falcon.HTTP_200
+                elif value == 'ask':
+                    resp.media = self._order_book.get_asks()
+                    resp.status = falcon.HTTP_200
+
 
 app.add_route('/orders', Orders())
+
+# verify transactions before add order to order book.
+# // let
+# signature = signatureObject.signature;
+# // // Recover.
+# // let
+# signer = await web3.eth.accounts.recover(signatureObject.messageHash, signatureObject.signature, true);
