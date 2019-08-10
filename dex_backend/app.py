@@ -13,7 +13,12 @@ from falcon_cors import CORS
 from queue import Queue
 from time import sleep
 
-cors = CORS(allow_origins_list=['http://localhost:3000'])
+# This is terrible practice...
+cors = CORS(
+    allow_all_origins=True,
+    allow_all_headers=True,
+    allow_all_methods=True
+)
 
 # falcon.API instances are callable WSGI apps
 app = falcon.API(middleware=[cors.middleware])
@@ -40,6 +45,7 @@ class Order(object):
             # token_maker_name,
             # token_taker_name,
             timestamp,
+            status,
             side,
             token_maker,
             token_taker,
@@ -51,6 +57,7 @@ class Order(object):
         # self._token_maker_name = token_maker_name
         # self._token_taker_name = token_taker_name
         self._timestamp = timestamp
+        self._status = status
         self._side = side
         self._token_maker = token_maker
         self._token_taker = token_taker
@@ -65,17 +72,37 @@ class Order(object):
         return self._timestamp+' [info] Order Placed - aapl_usdx market - account '+self._address_maker[:8]+' placed '+self._side+' order for '+str(self._amount_maker)+' '+self._token_maker[:10]+' @ '+str(self._amount_taker)+' '+self._token_taker[:10]
 
     def serialize(self):
+        if self._side == 'BUY':
+            qty = self._amount_taker
+            price = self.amount_maker() / 1000000000000000000 / qty
+        else:
+            qty = self.amount_maker()
+            price = self.amount_taker() / 1000000000000000000 / qty
+
         return {
+            "status": self._status,
+            "timestamp": self._timestamp,
             "addressMaker": self._address_maker,
             "amountMaker": str(self._amount_maker),
             "amountTaker": str(self._amount_taker),
             "nonce": str(self._nonce),
             "tokenMaker": self._token_maker,
             "tokenTaker": self._token_taker,
+            "hash": self._hash,
+            "qty": str(qty),
+            "price": str(price),
+            "side": self._side,
         }
 
     def timestamp(self):
         return self._timestamp
+
+    def status(self):
+        return self._status
+
+    def update_status(self, status):
+        self._timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S')
+        self._status = status
 
     def token_maker(self):
         return self._token_maker
@@ -97,6 +124,9 @@ class Order(object):
 
     def side(self):
         return self._side
+
+    def hash(self):
+        return self._hash
 
     def matches(self, another):
         # TODO: Should also account for <= or =>
@@ -204,6 +234,67 @@ class OrderBook(object):
         self._buy_orders = list()
         self._transaction_queue = TransactionQueue()
 
+        self._filled_orders = list()
+        self._cancelled_orders = list()
+        self._open_orders = list()
+
+    def get_open_orders(self):
+        self._open_orders = list()
+        self._open_orders.extend(self._buy_orders)
+        self._open_orders.extend(self._sell_orders)
+        self._open_orders.sort(key=lambda order: order.timestamp())
+        serialized_orders = list()
+        for o in self._open_orders:
+            serialized_orders.append(o.serialize())
+        return serialized_orders
+
+    def get_filled_orders(self):
+        self._filled_orders.sort(key=lambda order: order.timestamp())
+        serialized_orders = list()
+        for o in self._filled_orders:
+            serialized_orders.append(o.serialize())
+        return serialized_orders
+
+    def get_orders_of(self, address):
+        orders = list()
+        buy_orders = list()
+        sell_orders = list()
+        filled_orders = list()
+        cancelled_orders = list()
+
+        for order in self._buy_orders:
+            if order.address_maker() == address:
+                buy_orders.append(order)
+
+        for order in self._sell_orders:
+            if order.address_maker() == address:
+                sell_orders.append(order)
+
+        for order in self._filled_orders:
+            if order.address_maker() == address:
+                filled_orders.append(order)
+
+        for order in self._cancelled_orders:
+            if order.address_maker() == address:
+                cancelled_orders.append(order)
+
+        orders.extend(buy_orders)
+        orders.extend(sell_orders)
+        orders.extend(filled_orders)
+        orders.extend(cancelled_orders)
+        orders.sort(key=lambda order: order.timestamp(), reverse=True)
+
+        serialized_orders = list()
+        for order in orders:
+            serialized_orders.append(order.serialize())
+        return serialized_orders
+
+    def get_cancelled_orders(self):
+        self._cancelled_orders.sort(key=lambda order: order.timestamp())
+        serialized_orders = list()
+        for order in self._cancelled_orders:
+            serialized_orders.append(order.serialize())
+        return serialized_orders
 
     def put(self, order):
         side = order.side()
@@ -213,6 +304,21 @@ class OrderBook(object):
         elif order.side() == 'SELL':
             if not self._matched(order):
                 self._sell_orders.append(order)
+
+    def cancel_order(self, hash_):
+        for i, order in enumerate(self._buy_orders):
+            if order.hash() == hash_:
+                self._buy_orders.pop(i)
+                self._cancelled_orders.append(order)
+                order.update_status("CANCELLED")
+                return True
+        for i, order in enumerate(self._sell_orders):
+            if order.hash() == hash_:
+                self._sell_orders.pop(i)
+                self._cancelled_orders.append(order)
+                order.update_status("CANCELLED")
+                return True
+        return False
 
     def get_bids(self):
         # TODO: Add filter "token" to get only the bids/ask for this token.
@@ -255,11 +361,14 @@ class OrderBook(object):
         side = order_.side()
 
         if side == 'BUY':
-            self._sell_orders.sort(key=lambda order: order.timestamp)
+            self._sell_orders.sort(key=lambda order: order.timestamp())
             for i, order in enumerate(self._sell_orders):
                 if order_.matches(order):
-                    print('MATCHED')
+                    order.update_status("FILLED")
+                    order_.update_status("FILLED")
                     self._sell_orders.pop(i)
+                    self._filled_orders.append(order)
+                    self._filled_orders.append(order_)
                     self._transaction_queue.put((order, order_))
                     return True
             return False
@@ -268,7 +377,9 @@ class OrderBook(object):
             self._buy_orders.sort(key=lambda order: order.timestamp)
             for i, order in enumerate(self._buy_orders):
                 if order_.matches(order):
-                    print('MATCHED')
+                    self._sell_orders.pop(i)
+                    self._filled_orders.append(order)
+                    self._filled_orders.append(order_)
                     self._transaction_queue.put((order, order_))
                     return True
             return False
@@ -287,9 +398,11 @@ class Orders(object):
         message_hash = data["messageHash"]
         sender = order_data["addressMaker"]
         timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S')
+        status = "OPEN"
         if self.is_valid_sig(message_hash, signature, sender):
             order = Order(
                 timestamp,
+                status,
                 order_data["side"],
                 order_data["tokenMaker"],
                 order_data["tokenTaker"],
@@ -318,6 +431,26 @@ class Orders(object):
                 elif value == 'ask':
                     resp.media = self._order_book.get_asks()
                     resp.status = falcon.HTTP_200
+            if key == 'status':
+                if value == 'open':
+                    resp.media = self._order_book.get_open_orders()
+                if value == 'filled':
+                    resp.media = self._order_book.get_filled_orders()
+                if value == 'cancelled':
+                    resp.media = self._order_book.get_cancelled_orders()
+            if key == 'of':
+                resp.media = self._order_book.get_orders_of(value)
+
+    def on_delete(self, req, resp):
+        for key, value in req.params.items():
+            if key == 'hash':
+                if self._order_book.cancel_order(value):
+                    resp.status = falcon.HTTP_204
+                else:
+                    resp.status = falcon.HTTP_404
+            else:
+                resp.status = falcon.HTTP_405
+
 
 
 app.add_route('/orders', Orders())
