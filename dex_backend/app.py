@@ -3,6 +3,8 @@ import json
 from web3 import Web3, HTTPProvider
 from web3.auto import w3
 import requests
+import time
+import datetime
 from eth_account.messages import encode_defunct
 import random
 
@@ -37,6 +39,7 @@ class Order(object):
             self,
             # token_maker_name,
             # token_taker_name,
+            timestamp,
             side,
             token_maker,
             token_taker,
@@ -47,6 +50,7 @@ class Order(object):
             hash):
         # self._token_maker_name = token_maker_name
         # self._token_taker_name = token_taker_name
+        self._timestamp = timestamp
         self._side = side
         self._token_maker = token_maker
         self._token_taker = token_taker
@@ -57,7 +61,8 @@ class Order(object):
         self._hash = hash
 
     def __str__(self):
-        return 'Order [ '+self._side+' '+str(self._amount_maker)+' '+self._token_maker+' @ '+str(self._amount_taker)+' '+self._token_taker+']'
+        # return self._timestamp+' [info] Order Placed - aapl_usdx market - account '+self._address_maker+' placed '+self._side+' order for '+str(self._amount_maker)+' '+self._token_maker+' @ '+str(self._amount_taker)+' '+self._token_taker
+        return self._timestamp+' [info] Order Placed - aapl_usdx market - account '+self._address_maker[:8]+' placed '+self._side+' order for '+str(self._amount_maker)+' '+self._token_maker[:10]+' @ '+str(self._amount_taker)+' '+self._token_taker[:10]
 
     def serialize(self):
         return {
@@ -68,6 +73,9 @@ class Order(object):
             "tokenMaker": self._token_maker,
             "tokenTaker": self._token_taker,
         }
+
+    def timestamp(self):
+        return self._timestamp
 
     def token_maker(self):
         return self._token_maker
@@ -91,11 +99,7 @@ class Order(object):
         return self._side
 
     def matches(self, another):
-        # Should also account for <= or =>
-        print("SELF AM: " + str(self.amount_maker()))
-        print("ANOT AM: " + str(another.amount_maker()))
-        print("SELF AT: " + str(self.amount_taker()))
-        print("ANOT AT: " + str(another.amount_taker()))
+        # TODO: Should also account for <= or =>
         if self._amount_taker == another.amount_maker():
             return self._amount_maker == another.amount_taker()
         else:
@@ -114,7 +118,7 @@ class TransactionQueue(object):
         address_maker = str(maker_order.address_maker())
         address_taker = str(taker_order.address_maker())
         nonce = 0
-
+        timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S')
         json = {
             "addressMaker": address_maker,
             "addressTaker": address_taker,
@@ -124,10 +128,11 @@ class TransactionQueue(object):
             "tokenMaker": token_maker,
             "tokenTaker": token_taker,
         }
-
         url = "http://127.0.0.1:5000/transactions"
         response = requests.post(url, json=json)
-        print(response.status_code)
+        if response.status_code == 201:
+            log = timestamp + ' [info] Trade Executed - aapl_usdx market - account ' + address_maker[:8] + ' traded ' + str(amount_maker) + ' ' + token_maker[:10] + ' to ' + address_taker[:8] + ' for ' + str(amount_taker) + ' ' + token_taker[:10]
+            print(log)
 
 
 class Bid(object):
@@ -222,6 +227,7 @@ class OrderBook(object):
                 existing_bid.update_bid(size)
             else:
                 bids.append(bid)
+        bids.sort(key=lambda x: x.price, reverse=True)
         serialized_bids = list()
         for bid in bids:
             serialized_bids.append(bid.serialize())
@@ -239,6 +245,7 @@ class OrderBook(object):
                 existing_ask.update_ask(size)
             else:
                 asks.append(ask)
+        asks.sort(key=lambda x: x.price, reverse=False)
         serialized_asks = list()
         for ask in asks:
             serialized_asks.append(ask.serialize())
@@ -248,15 +255,18 @@ class OrderBook(object):
         side = order_.side()
 
         if side == 'BUY':
-            for order in self._sell_orders:
+            self._sell_orders.sort(key=lambda order: order.timestamp)
+            for i, order in enumerate(self._sell_orders):
                 if order_.matches(order):
                     print('MATCHED')
+                    self._sell_orders.pop(i)
                     self._transaction_queue.put((order, order_))
                     return True
             return False
 
         elif side == 'SELL':
-            for order in self._buy_orders:
+            self._buy_orders.sort(key=lambda order: order.timestamp)
+            for i, order in enumerate(self._buy_orders):
                 if order_.matches(order):
                     print('MATCHED')
                     self._transaction_queue.put((order, order_))
@@ -265,15 +275,10 @@ class OrderBook(object):
         return False
 
 
-
 class Orders(object):
 
     def __init__(self):
         self._order_book = OrderBook()
-
-    # def on_get(self, req, resp):
-    #     me_addre = contract.functions.matchingEngine().call()
-    #     print(contract.address)
 
     def on_post(self, req, resp):
         data = json.loads(req.stream.read().decode('utf-8'))
@@ -281,8 +286,10 @@ class Orders(object):
         order_data = data["orderData"]
         message_hash = data["messageHash"]
         sender = order_data["addressMaker"]
+        timestamp = datetime.datetime.fromtimestamp(time.time()).strftime('%Y-%m-%d %H:%M:%S')
         if self.is_valid_sig(message_hash, signature, sender):
             order = Order(
+                timestamp,
                 order_data["side"],
                 order_data["tokenMaker"],
                 order_data["tokenTaker"],
