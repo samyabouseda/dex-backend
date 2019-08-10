@@ -5,13 +5,8 @@ from web3.auto import w3
 import requests
 import time
 import datetime
-from eth_account.messages import encode_defunct
-import random
 
 from falcon_cors import CORS
-
-from queue import Queue
-from time import sleep
 
 # This is terrible practice...
 cors = CORS(
@@ -35,7 +30,160 @@ abi = dex_json["abi"]
 networks = dex_json["networks"]
 address = networks[network_id]["address"]
 
-# contract = web3.eth.contract(address=address, abi=abi)
+
+class Asset(object):
+
+    def __init__(self, address, amount):
+        self.address = address
+        self.amount = amount
+
+    def __eq__(self, other):
+        if isinstance(other, Asset):
+            return self.address == other.address
+
+    def __ne__(self, other):
+        eq = Asset.__eq__(self, other)
+        return NotImplemented if eq is NotImplemented else not eq
+
+    def serialize(self):
+        return {
+            "asset": {
+                "address": self.address,
+                "amount": self.amount
+            }
+        }
+
+    def update_asset(self, amount):
+        self.amount = self.amount + amount
+
+
+class Account(object):
+
+    def __init__(self, address):
+        self.address = address
+        self.assets = list()
+
+    def __eq__(self, other):
+        if isinstance(other, Account):
+            return self.address == other.address
+        return NotImplemented
+
+    def __ne__(self, other):
+        eq = Account.__eq__(self, other)
+        return NotImplemented if eq is NotImplemented else not eq
+
+    def serialize(self):
+        serialized_assets = list()
+        for asset in self.assets:
+            serialized_assets.append(asset.serialize())
+        return {
+            "account": {
+                "address": self.address,
+                "assets": serialized_assets
+            }
+        }
+
+    def update_balance(self, address, amount):
+        asset = Asset(
+            address,
+            amount
+        )
+        if asset not in self.assets:
+            self.assets.append(asset)
+        else:
+            index = self.assets.index(asset)
+            self.assets[index].update_asset(amount)
+
+    def balance_of(self, asset_address):
+        for asset in self.assets:
+            if asset.address == asset_address:
+                return asset.amount
+        return 0
+
+
+class AccountManager(object):
+
+    def __init__(self):
+        self._accounts = list()
+
+    def register_account(self, address):
+        account = Account(address)
+        if account not in self._accounts:
+            self._accounts.append(account)
+            return True
+        return False
+
+    def register_asset(self, account_address, asset_address, asset_amount):
+        account = self.get_account(account_address)
+        if account in self._accounts:
+            account.update_balance(asset_address, asset_amount)
+            return True
+        return False
+
+    def get_accounts(self):
+        serialized_accounts = list()
+        for account in self._accounts:
+            serialized_accounts.append(account.serialize())
+        return serialized_accounts
+
+    def get_account(self, address):
+        for account in self._accounts:
+            if account.address == address:
+                return account
+        return None
+
+    def get_balance_of(self, address, asset):
+        for account in self._accounts:
+            if account.address == address:
+                return account.balance_of(asset)
+        return 0
+
+
+account_manager = AccountManager()
+
+
+class Accounts(object):
+
+    def on_post(self, req, resp):
+        data = json.loads(req.stream.read().decode('utf-8'))
+        address = data["address"]
+        if account_manager.register_account(address):
+            resp.status = falcon.HTTP_201
+        else:
+            resp.status = falcon.HTTP_409
+
+    def on_get(self, req, resp):
+        resp.media = account_manager.get_accounts()
+        resp.status = falcon.HTTP_202
+
+    # def on_put(self, req, resp):
+    #     for key, value in req.params.items():
+    #         if key == 'registerAssets':
+    #             if value == 'bid':
+    #                 resp.media = self._order_book.get_bids()
+    #                 resp.status = falcon.HTTP_200
+
+class AccountsAssets(object):
+
+    def on_post(self, req, resp):
+        data = json.loads(req.stream.read().decode('utf-8'))
+        asset_address = data["asset"]["address"]
+        asset_amount = data["asset"]["amount"]
+        account_address = data["account_address"]
+        if account_manager.register_asset(account_address, asset_address, asset_amount):
+            resp.status = falcon.HTTP_201
+        else:
+            resp.status = falcon.HTTP_406
+
+    def on_put(self, req, resp):
+        data = json.loads(req.stream.read().decode('utf-8'))
+        asset_address = data["asset"]["address"]
+        asset_amount = data["asset"]["amount"]
+        account_address = data["account_address"]
+        if account_manager.register_asset(account_address, asset_address, asset_amount):
+            resp.status = falcon.HTTP_201
+        else:
+            resp.status = falcon.HTTP_406
 
 
 class Order(object):
@@ -68,7 +216,6 @@ class Order(object):
         self._hash = hash
 
     def __str__(self):
-        # return self._timestamp+' [info] Order Placed - aapl_usdx market - account '+self._address_maker+' placed '+self._side+' order for '+str(self._amount_maker)+' '+self._token_maker+' @ '+str(self._amount_taker)+' '+self._token_taker
         return self._timestamp+' [info] Order Placed - aapl_usdx market - account '+self._address_maker[:8]+' placed '+self._side+' order for '+str(self._amount_maker)+' '+self._token_maker[:10]+' @ '+str(self._amount_taker)+' '+self._token_taker[:10]
 
     def serialize(self):
@@ -412,15 +559,21 @@ class Orders(object):
                 order_data["nonce"],
                 signature
             )
-            print(order)
-            self._order_book.put(order)
-            resp.status = falcon.HTTP_201
+            if self._user_has_enough_funds(order):
+                print(order)
+                self._order_book.put(order)
+                resp.status = falcon.HTTP_201
+            else:
+                resp.status = falcon.HTTP_402
         else:
             resp.status = falcon.HTTP_406
 
     def is_valid_sig(self, hash, sig, sender):
         signer = w3.eth.account.recoverHash(hash, signature=sig)
         return sender == signer
+
+    def _user_has_enough_funds(self, order):
+        return True
 
     def on_get(self, req, resp):
         for key, value in req.params.items():
@@ -454,6 +607,8 @@ class Orders(object):
 
 
 app.add_route('/orders', Orders())
+app.add_route('/accounts', Accounts())
+app.add_route('/accounts/assets', AccountsAssets())
 
 # verify transactions before add order to order book.
 # // let
