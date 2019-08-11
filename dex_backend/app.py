@@ -33,8 +33,9 @@ address = networks[network_id]["address"]
 
 class Asset(object):
 
-    def __init__(self, address, amount):
+    def __init__(self, address, symbol, amount):
         self.address = address
+        self.symbol = symbol
         self.amount = amount
 
     def __eq__(self, other):
@@ -48,6 +49,7 @@ class Asset(object):
     def serialize(self):
         return {
             "asset": {
+                "symbol": self.symbol,
                 "address": self.address,
                 "amount": self.amount
             }
@@ -83,9 +85,10 @@ class Account(object):
             }
         }
 
-    def update_balance(self, address, amount):
+    def update_balance(self, address, symbol, amount):
         asset = Asset(
             address,
+            symbol,
             amount
         )
         if asset not in self.assets:
@@ -113,10 +116,10 @@ class AccountManager(object):
             return True
         return False
 
-    def register_asset(self, account_address, asset_address, asset_amount):
+    def register_asset(self, account_address, asset_address, asset_symbol, asset_amount):
         account = self.get_account(account_address)
         if account in self._accounts:
-            account.update_balance(asset_address, asset_amount)
+            account.update_balance(asset_address, asset_symbol, asset_amount)
             return True
         return False
 
@@ -156,12 +159,6 @@ class Accounts(object):
         resp.media = account_manager.get_accounts()
         resp.status = falcon.HTTP_202
 
-    # def on_put(self, req, resp):
-    #     for key, value in req.params.items():
-    #         if key == 'registerAssets':
-    #             if value == 'bid':
-    #                 resp.media = self._order_book.get_bids()
-    #                 resp.status = falcon.HTTP_200
 
 class AccountsAssets(object):
 
@@ -169,21 +166,25 @@ class AccountsAssets(object):
         data = json.loads(req.stream.read().decode('utf-8'))
         asset_address = data["asset"]["address"]
         asset_amount = data["asset"]["amount"]
+        asset_symbol = data["asset"]["symbol"]
         account_address = data["account_address"]
-        if account_manager.register_asset(account_address, asset_address, asset_amount):
+        if account_manager.register_asset(account_address, asset_address, asset_symbol, asset_amount):
             resp.status = falcon.HTTP_201
         else:
             resp.status = falcon.HTTP_406
 
-    def on_put(self, req, resp):
-        data = json.loads(req.stream.read().decode('utf-8'))
-        asset_address = data["asset"]["address"]
-        asset_amount = data["asset"]["amount"]
-        account_address = data["account_address"]
-        if account_manager.register_asset(account_address, asset_address, asset_amount):
-            resp.status = falcon.HTTP_201
-        else:
-            resp.status = falcon.HTTP_406
+    def on_get(self, req, resp):
+        # data = json.loads(req.stream.read().decode('utf-8'))
+        # account_address = data["address"]
+        for key, value in req.params.items():
+            if key == 'account':
+                account = account_manager.get_account(value)
+                if account is None:
+                    resp.status = falcon.HTTP_404
+                else:
+                    resp.media = account.serialize()
+            else:
+                resp.status = falcon.HTTP_405
 
 
 class Order(object):
