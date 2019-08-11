@@ -296,11 +296,13 @@ class Order(object):
         return self._hash
 
     def matches(self, another):
-        # TODO: Should also account for <= or =>
-        if self._amount_taker == another.amount_maker():
-            return self._amount_maker == another.amount_taker()
-        else:
-            return False
+        if self._side == 'BUY':
+            if self._amount_taker <= another.amount_maker():
+                return self._amount_maker >= another.amount_taker()
+        else: # self._side == 'SELL'
+            if self._amount_taker <= another.amount_maker():
+                return self._amount_maker >= another.amount_taker()
+        return False
 
 class TransactionQueue(object):
 
@@ -526,7 +528,6 @@ class OrderBook(object):
 
     def _matched(self, order_):
         side = order_.side()
-
         if side == 'BUY':
             self._sell_orders.sort(key=lambda order: order.timestamp())
             for i, order in enumerate(self._sell_orders):
@@ -545,6 +546,8 @@ class OrderBook(object):
             self._buy_orders.sort(key=lambda order: order.timestamp())
             for i, order in enumerate(self._buy_orders):
                 if order_.matches(order):
+                    order.update_status("FILLED")
+                    order_.update_status("FILLED")
                     self._buy_orders.pop(i)
                     self._filled_orders.append(order)
                     self._filled_orders.append(order_)
@@ -647,10 +650,3 @@ class Orders(object):
 app.add_route('/orders', Orders())
 app.add_route('/accounts', Accounts())
 app.add_route('/accounts/assets', AccountsAssets())
-
-# verify transactions before add order to order book.
-# // let
-# signature = signatureObject.signature;
-# // // Recover.
-# // let
-# signer = await web3.eth.accounts.recover(signatureObject.messageHash, signatureObject.signature, true);
