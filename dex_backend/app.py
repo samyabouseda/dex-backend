@@ -85,10 +85,22 @@ class Account(object):
             }
         }
 
-    def update_balance(self, address, symbol, amount):
+    def set_balance(self, address, symbol, amount):
         asset = Asset(
             address,
             symbol,
+            amount
+        )
+        if asset not in self.assets:
+            self.assets.append(asset)
+        else:
+            index = self.assets.index(asset)
+            self.assets[index].update_asset(amount)
+
+    def update_balance(self, address, amount):
+        asset = Asset(
+            address,
+            '',
             amount
         )
         if asset not in self.assets:
@@ -119,7 +131,14 @@ class AccountManager(object):
     def register_asset(self, account_address, asset_address, asset_symbol, asset_amount):
         account = self.get_account(account_address)
         if account in self._accounts:
-            account.update_balance(asset_address, asset_symbol, asset_amount)
+            account.set_balance(asset_address, asset_symbol, asset_amount)
+            return True
+        return False
+
+    def update_balance(self, account_address, asset_address, asset_amount):
+        account = self.get_account(account_address)
+        if account in self._accounts:
+            account.update_balance(asset_address, asset_amount)
             return True
         return False
 
@@ -518,14 +537,15 @@ class OrderBook(object):
                     self._filled_orders.append(order)
                     self._filled_orders.append(order_)
                     self._transaction_queue.put((order, order_))
+                    # account_manager.update_balance(order.address_maker(), order.token_maker(), order.amount_maker() * -1)
                     return True
             return False
 
         elif side == 'SELL':
-            self._buy_orders.sort(key=lambda order: order.timestamp)
+            self._buy_orders.sort(key=lambda order: order.timestamp())
             for i, order in enumerate(self._buy_orders):
                 if order_.matches(order):
-                    self._sell_orders.pop(i)
+                    self._buy_orders.pop(i)
                     self._filled_orders.append(order)
                     self._filled_orders.append(order_)
                     self._transaction_queue.put((order, order_))
@@ -563,6 +583,11 @@ class Orders(object):
             if self._user_has_enough_funds(order):
                 print(order)
                 self._order_book.put(order)
+                # Update balances.
+                amount_maker = int(order_data["amountMaker"])
+                if order.side() == 'BUY':
+                    amount_maker = amount_maker / 1000000000000000000
+                account_manager.update_balance(order_data["addressMaker"], order_data["tokenMaker"], amount_maker * -1)
                 resp.status = falcon.HTTP_201
             else:
                 resp.status = falcon.HTTP_402
@@ -574,7 +599,19 @@ class Orders(object):
         return sender == signer
 
     def _user_has_enough_funds(self, order):
-        return True
+        sender_address = order.address_maker()
+        sender_account = account_manager.get_account(sender_address)
+        token_maker = order.token_maker()
+        amount_maker = order.amount_maker()
+        sender_balance = sender_account.balance_of(token_maker)
+        if order.side() == 'BUY':
+            amount_maker = amount_maker / 1000000000000000000
+        if sender_balance >= amount_maker:
+            print("Sender has enough funds.")
+            return True
+        else:
+            print("Sender doesn't have enough funds.")
+            return False
 
     def on_get(self, req, resp):
         for key, value in req.params.items():
